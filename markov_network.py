@@ -9,8 +9,9 @@ import scipy.stats as ss
 
 
 def find_lexicographic_ordering(ug):
-    """Lexicographic breadth-first search to find a
-       lexicographic ordering of the nodes in an undirected graph (ug).
+    """Lexicographic breadth-first search to find a.
+
+        lexicographic ordering of the nodes in an undirected graph (ug).
 
     Parameters
     ----------
@@ -105,7 +106,6 @@ def ug_to_dag(ug):
     dag : 
     node_ordering : 
     """
-
     # Find perfect elimination ordering of ug
     perf_elim_ordering = find_perfect_elimination_ordering(ug)
 
@@ -134,7 +134,7 @@ def bn_sample_joint_from_prior(dag, node_ordering, n, ess, random_state=None):
     dag : float or arraylike
         adjacency matrix of directed acyclic graph.
     node_ordering : float
-        node ordering in which the nodes are samples. 
+        node ordering in which the nodes are samples.
     n : int
         number of samples.
     ess : float
@@ -145,53 +145,64 @@ def bn_sample_joint_from_prior(dag, node_ordering, n, ess, random_state=None):
     oc : joint outcomes
     pmat : matrix of sampled joint distributions.
 
-
     """
     d = dag.shape[1]
 
     repeated_list = [[True, False]] * d
     oc = np.array(list(itertools.product(*repeated_list)))
     pmat = np.ones((oc.shape[0], n))
+    k = 0
     for i in np.arange(d):
         node = node_ordering[i]
         par = np.where(dag[:, node] == 1)[0]
+
         if par.size != 0:
-            repeated_list = [[True, False]] * np.sum(par)
+            repeated_list = [[True, False]] * (par.size)
             par_oc = np.array(list(itertools.product(*repeated_list)))
             alpha = ess / (oc.shape[0] * 2)
+
             for l in np.arange(par_oc.shape[0]):
                 p0 = np.atleast_1d(ss.beta.rvs(alpha, alpha, size=n))
+                k += n
                 ind = np.equal(oc[:, par], par_oc[l, :]).all(axis=1)
-                ind0 = np.logical_and(ind.ravel(), (oc[:, node].ravel() == 0))
-                pmat[ind0, :] = pmat[ind0, :] * np.tile(p0, (np.sum(ind0), 1))
+
+                ind0 = np.logical_and(ind.ravel(), (oc[:, node] == 0).ravel())
+                pmat[ind0, :] = pmat[ind0, :] * np.tile(p0,
+                                                        (np.sum(ind0), 1))
+
                 ind1 = np.logical_and(ind.ravel(), (oc[:, node] == 1).ravel())
-                pmat[ind1, :] = pmat[ind1, :] * np.tile(1 - p0, (np.sum(ind1), 1))
+                pmat[ind1, :] = pmat[ind1, :] * np.tile(1 - p0,
+                                                        (np.sum(ind1), 1))
+                print(pmat)
         else:
             alpha = ess / 2
             p0 = np.atleast_2d(ss.beta.rvs(alpha, alpha, size=n))
+            k += n
             ind0 = (oc[:, node] == 0)
             pmat[ind0, :] = pmat[ind0, :] * np.tile(p0, (np.sum(ind0), 1))
             ind1 = (oc[:, node] == 1)
             pmat[ind1, :] = pmat[ind1, :] * np.tile(1 - p0, (np.sum(ind0), 1))
-
+            print(pmat)
+    print("k")
+    print(k)
     return oc, pmat
 
 
 def maximalCliques(A):
-    """Find maximal cliques using the Bron-Kerbosch algorithm given a graph's 
-       boolean adjacency matrix. 
+    """Find maximal cliques using the Bron-Kerbosch algorithm given a graph's
+       boolean adjacency matrix.
 
        Ref: Bron, Coen and Kerbosch, Joep, "Algorithm 457: finding all cliques
-       of an undirected graph", Communications of the ACM, vol. 16, no. 9, 
+       of an undirected graph", Communications of the ACM, vol. 16, no. 9,
        pp: 575–577, September 1973.
 
-       Ref: Cazals, F. and Karande, C., "A note on the problem of reporting 
+       Ref: Cazals, F. and Karande, C., "A note on the problem of reporting
        maximal cliques", Theoretical Computer Science (Elsevier), vol. 407,
        no. 1-3, pp: 564-568, November 2008.
 
        Adapted from a matlab-function by Jeffrey Wildman (c) 2011
        jeffrey.wildman@gmail.com
-   
+
     """
 
     if A.shape[0] != A.shape[1]:
@@ -268,17 +279,20 @@ def mn_sample_para(ug, n, ess):
     para_sample - matrix containing the n samples
 
     '''
-    print("How does this work??")
     # Turn DAG into an equivalent UG
     dag, node_ordering = ug_to_dag(ug)
 
     # IF no data, sample joint distributions from the prior, ELSE
     # sample joint distributions from posterior.
     oc, pmat = bn_sample_joint_from_prior(dag, node_ordering, n, ess)
-
+    print(oc)
+    print(pmat)
+    print(np.sum(pmat))
     # Convert the joint distributions into MN parameters.
     para_mat, para_sample = joint_to_mn_para(oc, pmat, ug)
 
+    # print(para_mat)
+    # print(para_sample)
     return para_mat, para_sample
 
 
@@ -298,7 +312,7 @@ def joint_to_mn_para(oc, pmat, ug):
     Returns
     -------
     para_mat:
-        Matrix representing the log-linear parameters. 
+        Matrix representing the log-linear parameters.
     para_sample:
         Parameter values.
 
@@ -335,6 +349,7 @@ def mn_para_mat(ug):
     -------
     para_mat:
         Matrix representing the log-linear parameters.
+
     '''
     d = ug.shape[1]
     mc = maximalCliques(ug)
