@@ -123,10 +123,20 @@ def ug_to_dag(ug):
 
     node_ordering = np.flip(perf_elim_ordering)
 
-    return dag, node_ordering
+    oc = get_joint_outcomes(dag.shape[1])
+
+    return dag, node_ordering, oc
 
 
-def bn_sample_joint_from_prior(dag, node_ordering, n, ess, random_state=None):
+def get_joint_outcomes(d):
+    """Get the matrix of joint outcomes for the dag."""
+    repeated_list = [[True, False]] * d
+    oc = np.array(list(itertools.product(*repeated_list)))
+
+    return oc
+
+
+def bn_sample_joint_from_prior(beta, dag, node_ordering, n, ess, batch_size=1, random_state=None):
     """Sample joint distributions from a BDeu prior for a given DAG.
 
     Parameters
@@ -150,7 +160,8 @@ def bn_sample_joint_from_prior(dag, node_ordering, n, ess, random_state=None):
 
     repeated_list = [[True, False]] * d
     oc = np.array(list(itertools.product(*repeated_list)))
-    pmat = np.ones((oc.shape[0], n))
+
+    pmat = np.ones((oc.shape[0], beta.shape[0]))
     k = 0
     for i in np.arange(d):
         node = node_ordering[i]
@@ -162,30 +173,31 @@ def bn_sample_joint_from_prior(dag, node_ordering, n, ess, random_state=None):
             alpha = ess / (oc.shape[0] * 2)
 
             for l in np.arange(par_oc.shape[0]):
-                p0 = np.atleast_1d(ss.beta.rvs(alpha, alpha, size=n))
-                k += n
+                p0 = beta[:, k]
+                k += 1
                 ind = np.equal(oc[:, par], par_oc[l, :]).all(axis=1)
 
                 ind0 = np.logical_and(ind.ravel(), (oc[:, node] == 0).ravel())
-                pmat[ind0, :] = pmat[ind0, :] * np.tile(p0,
+                pmat[ind0, :] = pmat[ind0, :] * np.tile(p0.reshape(1, -1),
                                                         (np.sum(ind0), 1))
 
                 ind1 = np.logical_and(ind.ravel(), (oc[:, node] == 1).ravel())
-                pmat[ind1, :] = pmat[ind1, :] * np.tile(1 - p0,
+                pmat[ind1, :] = pmat[ind1, :] * np.tile(1 - p0.reshape(1, -1),
                                                         (np.sum(ind1), 1))
-                print(pmat)
         else:
             alpha = ess / 2
-            p0 = np.atleast_2d(ss.beta.rvs(alpha, alpha, size=n))
-            k += n
+            p0 = beta[:, k]
+            k += 1
+
             ind0 = (oc[:, node] == 0)
-            pmat[ind0, :] = pmat[ind0, :] * np.tile(p0, (np.sum(ind0), 1))
+            pmat[ind0, :] = pmat[ind0, :] * np.tile(p0.reshape(1, -1),
+                                                    (np.sum(ind0), 1))
+
             ind1 = (oc[:, node] == 1)
-            pmat[ind1, :] = pmat[ind1, :] * np.tile(1 - p0, (np.sum(ind0), 1))
-            print(pmat)
-    print("k")
-    print(k)
-    return oc, pmat
+            pmat[ind1, :] = pmat[ind1, :] * np.tile(1 - p0.reshape(1, -1),
+                                                    (np.sum(ind0), 1))
+
+    return pmat
 
 
 def maximalCliques(A):
@@ -261,8 +273,8 @@ def maximalCliques(A):
     return MC
 
 
-def mn_sample_para(ug, n, ess):
-    '''Sample model parameters of a chordal MN from a prior/posterior specified.
+def mn_sample_para(beta, ug, ess, dag, node_ordering, oc, para_mat, batch_size=1):
+    """Sample model parameters of a chordal MN from a prior/posterior specified.
 
     Parameters
     ----------
@@ -271,33 +283,28 @@ def mn_sample_para(ug, n, ess):
     n : int
         Number of samples
     ess : float
-        Effective sample size in the BDeu prior. 
+        Effective sample size in the BDeu prior.
 
     Returns
     -------
     para_mat - MN parameters.
     para_sample - matrix containing the n samples
 
-    '''
-    # Turn DAG into an equivalent UG
-    dag, node_ordering = ug_to_dag(ug)
+    """
 
-    # IF no data, sample joint distributions from the prior, ELSE
-    # sample joint distributions from posterior.
-    oc, pmat = bn_sample_joint_from_prior(dag, node_ordering, n, ess)
-    print(oc)
-    print(pmat)
-    print(np.sum(pmat))
+    n = 1
+    pmat = bn_sample_joint_from_prior(beta=beta, dag=dag,
+                                      node_ordering=node_ordering,
+                                      n=n, ess=ess, batch_size=batch_size)
+
     # Convert the joint distributions into MN parameters.
-    para_mat, para_sample = joint_to_mn_para(oc, pmat, ug)
+    para_sample = joint_to_mn_para(oc=oc, pmat=pmat, ug=ug, para_mat=para_mat)
 
-    # print(para_mat)
-    # print(para_sample)
-    return para_mat, para_sample
+    return para_sample
 
 
-def joint_to_mn_para(oc, pmat, ug):
-    '''Generates the log-linear parameterization of a collection
+def joint_to_mn_para(oc, pmat, ug, para_mat):
+    """Generate the log-linear parameterization of a collection
        of Markov network distributions.
 
     Parameters
@@ -316,8 +323,7 @@ def joint_to_mn_para(oc, pmat, ug):
     para_sample:
         Parameter values.
 
-    '''
-    para_mat = mn_para_mat(ug)
+    """
     para_sample = np.zeros((para_mat.shape[0], pmat.shape[1]))
     para_size = np.sum(para_mat, axis=1)
     for k in np.unique(para_size):
@@ -334,7 +340,7 @@ def joint_to_mn_para(oc, pmat, ug):
                 para_sample[i, :] = np.log(p) - np.sum(para_sample[pos, :],
                                                        axis=0)
 
-    return para_mat, para_sample
+    return para_sample
 
 
 def mn_para_mat(ug):
@@ -369,8 +375,29 @@ def mn_para_mat(ug):
     return para_mat
 
 
-def mn_generate_data(para_mat, para_val, n, seed=None):
-    '''Generates data from a log-linear model using exact sampling.
+def gmn_simulate(*a, ug, n, ess, dag, node_ordering, oc, para_mat,
+                 batch_size=1, random_state=None):
+    beta = np.asanyarray(a).reshape(batch_size, -1)
+
+    para_val = mn_sample_para(beta=beta, ug=ug, ess=ess, dag=dag,
+                              node_ordering=node_ordering,
+                              oc=oc, para_mat=para_mat)
+
+    # Generate observed data
+    obs_data_ind = np.empty((batch_size, n))
+    for i in np.arange(batch_size):
+        obs_data_ind[i, :] = mn_generate_data(para_mat=para_mat,
+                                              para_val=para_val[:, i],
+                                              n=n, oc=oc,
+                                              batch_size=1,
+                                              random_state=random_state)
+
+    return obs_data_ind
+
+
+def mn_generate_data(para_mat, para_val, n, oc, batch_size=1,
+                     random_state=None):
+    """Generate data from a log-linear model using exact sampling.
 
     Parameters
     ----------
@@ -386,20 +413,20 @@ def mn_generate_data(para_mat, para_val, n, seed=None):
     data : Sampled data matrix.
 
 
-    '''
-    oc, p = mn_joint_dist(para_mat, para_val)
+    """
+    p = mn_joint_dist(para_mat, para_val, oc)
 
     # print(ss.multinomial.rvs(n, p, size=1, random_state=seed))
     ind = np.repeat(np.arange(oc.shape[0]),
                     ss.multinomial.rvs(n, p, size=1,
-                                       random_state=seed).ravel())
-    data = oc[ind, :]
+                    random_state=random_state).ravel())
+    # data = oc[ind, :]
 
-    return data
+    return ind
 
 
-def mn_joint_dist(para_mat, para_val):
-    ''' Calculate joint distribution from a log-linear parameterization.
+def mn_joint_dist(para_mat, para_val, oc):
+    """Calculate joint distribution from a log-linear parameterization.
 
     Parameters
     ----------
@@ -407,16 +434,15 @@ def mn_joint_dist(para_mat, para_val):
         Logical matrix representing log-linear parameters.
     para_val : float or arraylike
         Numerical values of the log-linear parameters.
+    oc : 
+        Joint outcomes of the variables.
 
     Returns
     -------
-    oc : joint outcomes of the variables.
+
     p : probabilities of the joint outcomes.
 
-    '''
-    d = para_mat.shape[1]
-    repeated_list = [[True, False]] * d
-    oc = np.array(list(itertools.product(*repeated_list)))
+    """
     p = np.zeros(oc.shape[0])
     for i in np.arange(para_mat.shape[0]):
         ind = np.all(oc[:, para_mat[i, :]], axis=1)
@@ -428,18 +454,20 @@ def mn_joint_dist(para_mat, para_val):
     else:
         p = p / np.sum(p)
 
-    return oc, p
+    return p
 
 
-def get_model(n_obs=100, true_params=None, seed_obs=None):
+def get_model(n_obs=100, ess=50, ug=None, seed_obs=None):
     """Return a network model for elfi.
 
     Parameters
     ----------
     n_obs : int, optional
         observation length of the MA2 process
-    true_params : list, optional
-        parameters with which the observed data is generated
+    ess : in, optional
+        effective sample size
+    ug : boolean array
+        undirected adjacency matrix
     seed_obs : int, optional
         seed for the observed data generation
 
@@ -448,83 +476,62 @@ def get_model(n_obs=100, true_params=None, seed_obs=None):
     m : elfi.ElfiModel
 
     """
+    if ug is None:
+        ug = np.zeros((4, 4))
+        ug[0, 1:4] = 1
+        ug[1:4, 0] = 1
 
-    # if true_params is None:
-    #     true_params = [.6, .2]
+    m = elfi.new_model()
+    priors = []
+    dag, node_ordering, oc = ug_to_dag(ug)
+    para_mat = mn_para_mat(ug)
+    combs_to_node = 2 ** np.sum(dag, axis=0)
+    n_dim = np.sum(combs_to_node).astype(int)
+    alpha = ess / 2 / oc.shape[0] * np.ones(n_dim)
+    no_connections = np.where(np.sum(dag, axis=0) == 0)[0].astype(int)
+    alpha[no_connections] = ess / 2
 
-    ug = np.zeros((4, 4))
-    ug[0,1:3] = 1
-    ug = np.max(ug, ug.T)
+    for i in np.arange(n_dim):
+        name_prior = 'a_{}'.format(i)
+        prior_beta = elfi.Prior('beta',
+                                alpha[i],
+                                alpha[i],
+                                model=m,
+                                name=name_prior)
+        priors.append(prior_beta)
 
-    # Generate values from the prior as the ground truth
-    para_mat_true, para_val_true = mn_sample_para(ug, [], 1, 10)
-    # Generate observed data
-    sim_data, _ = mn_generate_data(
-        para_mat, para_val, n=200,
-        random_state=np.random.RandomState(seed_obs))
+    sim_fn = partial(gmn_simulate,
+                     ug=ug,
+                     n=n_obs,
+                     ess=ess,
+                     dag=dag,
+                     node_ordering=node_ordering,
+                     oc=oc,
+                     para_mat=para_mat)
+    a_true = 0.2 * np.ones((n_dim, 1))
+    y = sim_fn(a_true)
 
-    # y = MA2(*true_params, n_obs=n_obs, random_state=np.random.RandomState(seed_obs))
-    sim_fn = partial(mn_generate_data, n=n_obs)
+    elfi.Simulator(sim_fn, *priors, observed=y, name='GMN')
+    elfi.Summary(sumstats, m['GMN'], oc.shape[0], n_obs, name='S')
+    elfi.Distance('euclidean',  m['S'], name='d')
 
-    m = elfi.ElfiModel()
-    elfi.Prior(CustomPrior, model=m, name='mn')
-    elfi.Simulator(sim_fn, m['mn'], observed=y, name='GMN')
-    elfi.Summary(sumstats, m['GMN'], name='S')
-    elfi.Distance('euclidean', m['S'], name='d')
     return m
 
-class CustomPrior(elfi.Distribution):
-    @classmethod
-    def rvs(cls, ug, ess, size=1, random_state=None):
-        """Get random variates.
 
-        Parameters
-        ----------
-        ug : float
-            Adjacency matrix of undirected graph.
-        ess : float
-            Effective sample size in the BDeu prior.
-        size : int or tuple, optional
-        random_state : RandomState, optional
+def sumstats(x, n, n_obs):
 
-        Returns
-        -------
-        arraylike
+    e = np.atleast_2d(np.arange(n))
+    x = np.asanyarray(x).reshape(-1, n_obs)
+    m = x.shape[0]
+    if m > 1:
+        tmp, counts = np.apply_along_axis(np.unique, 1, np.column_stack((x, e[np.zeros(m).astype(int), :])), return_counts=True)
+    else:    
+        tmp, counts = np.unique(np.column_stack((x, e[np.zeros(m).astype(int), :])), axis=1, return_counts=True)
 
-        """
-
-        dag, node_ordering = ug_to_dag(ug)
-        oc, pmat = bn_sample_joint_from_prior(dag, node_ordering, n, ess, random_state=random_state)
-        para_mat, para_sample = joint_to_mn_para(oc, pmat, ug)
-
-        # u = ss.uniform.rvs(loc=0, scale=1, size=size, random_state=random_state)
-        # t1 = np.where(u < 0.5, np.sqrt(2. * u) * b - b, -np.sqrt(2. * (1. - u)) * b + b)
-        return para_mat, para_sample
-
-    @classmethod
-    def pdf(cls, x, b):
-        """Return density at `x`.
-
-        Parameters
-        ----------
-        x : float or arraylike
-        b : float
-
-        Returns
-        -------
-        arraylike
-
-        """
-        p = 1. / b - np.abs(x) / (b * b)
-        # set values outside of [-b, b] to zero
-        p = np.where(p < 0., 0., p)
-        return p
+    return counts - 1
 
 
-# # def distance(*summaries, observed):
-
-
-def mn_calculate_jsd(sim_data, para_mat, observed):
+def mn_calculate_jsd(*sim_data, observed, para_mat):
     '''function jsd = mn_calculate_jsd(para_mat,obs_data,sim_data)
 
     Parameters
@@ -558,308 +565,16 @@ def mn_calculate_jsd(sim_data, para_mat, observed):
         count_obs = np.zeros(noc)
         count_sim = np.zeros(noc)
         for j in np.arange(noc):
-            count_obs[j] = np.sum(np.equal(observed[:, ind], oc[j, :]).all(axis=1)) + 1
-            count_sim[j] = np.sum(np.equal(sim_data[:, ind], oc[j, :]).all(axis=1)) + 1
+            count_obs[j] = np.sum(np.equal(observed[:, ind],
+                                  oc[j, :]).all(axis=1)) + 1
+            count_sim[j] = np.sum(np.equal(sim_data[:, ind],
+                                  oc[j, :]).all(axis=1)) + 1
         p = count_obs / np.sum(count_obs)
         q = count_sim / np.sum(count_sim)
         m = (p + q) / 2
-        jsd_vec[i] = 0.5 * (np.dot(p, np.log(p / m)) + np.dot(q, np.log(q / m)))
+        jsd_vec[i] = 0.5 * (np.dot(p, np.log(p / m))
+                            + np.dot(q, np.log(q / m)))
 
     jsd = np.mean(jsd_vec)
 
     return jsd
-#         tmp = repmat({[false true]},1,d);
-#         inc = any(para_mat,2);
-#         para_mat = para_mat(inc,:);
-#         jsd_vec = zeros(size(para_mat,1),1);    
-#         for i = 1:size(para_mat,1)
-#             ind = para_mat(i,:);
-#             oc = allcomb(tmp{ind});
-#             noc = size(oc,1);
-#             count_obs = zeros(noc,1);
-#             count_sim = zeros(noc,1);
-#             for j in np.arange(noc):
-#                 count_obs[j] = sum(ismember(obs_data(:,ind),oc(j,:),'rows'))+1;
-#                 count_sim[j] = sum(ismember(sim_data(:,ind),oc(j,:),'rows'))+1;
-#             end
-#             p = count_obs/sum(count_obs);
-#             q = count_sim/sum(count_sim);
-#             m = (p+q)/2
-#             jsd_vec(i) = 0.5*(p'*log(p./m)+q'*log(q./m));
-#         end
-        
-#         jsd = np.mean(jsd_vec);
-#     end
-#     '''
-
-
-
-# # def mn_normalize(para_mat, para_val):
-# '''
-# function para_val = mn_normalize(para_mat, para_val)
-#     %-------------------------------------------------------------------------
-#     % Normalize a log-linear model by modifying the normalizing term.
-#     % INPUT:    para_mat - logical matrix representing log-linear parameters.
-#     %           para_val - numerical values of the log-linear parameters.
-#     % OUTPUT:   para_val - an updated version of para_val where the "zero"
-#     %                      parameter has been modified to ensure that the joint 
-#     %                      distribution sums to 1.
-#     %-------------------------------------------------------------------------
-#         [~, p] = mn_to_joint(para_mat, para_val);
-#         ind = all(~para_mat,2);
-#         para_val(ind) = para_val(ind)-log(sum(p));
-#     end
-# '''
-# #    return para_val
-
-
-# #def mn_to_joint(para_mat,para_val):
-
-# ''' function [oc,p] = mn_to_joint(para_mat,para_val)
-#     %-------------------------------------------------------------------------
-#     % Calculate joint distribution from a log-linear parameterization. 
-#     % INPUT:    para_mat - logical matrix representing log-linear parameters.
-#     %           para_val - numerical values of the log-linear parameters.
-#     % OUTPUT:   oc - joint outcomes of the variables.
-#     %           p - probabilities of the joint outcomes.
-#     %-------------------------------------------------------------------------
-#         d = size(para_mat,2);
-#         tmp = repmat({[false true]},1,d);
-#         oc = allcomb(tmp{:});
-#         p = zeros(size(oc,1),1);
-#         for i = 1:size(para_mat,1)
-#             ind = all(oc(:,para_mat(i,:)),2);
-#             p(ind) = p(ind)+para_val(i);
-#         end
-#         p = exp(p);
-#         %p = p/sum(p);
-#     end
-# '''
-# #    return oc, p
-
-
-
-
-
-# #def mn_estimate_para():
-#     '''function [para_mat,para_val,oc,p] = mn_estimate_para(ug, data, ess)
-#     %-------------------------------------------------------------------------
-#     % Estimate joint distribution for a given DAG. 
-#     % INPUT:    ug - adjacency matrix of chordal undirected graph.
-#     %           data - data matrix.
-#     %           ess - effective sample size in BDeu prior (0 for MLE).
-#     % OUTPUT:   para_mat - MN parameters.
-#     %           para_val - parameter values.
-#     %           oc - joint outcomes.
-#     %           p - joint distribution.
-#     %-------------------------------------------------------------------------
-#         [dag, node_ordering] = ug_to_dag(ug);
-                
-#         [oc,p] = bn_est_joint(dag, node_ordering, data, ess);
-                
-#         [para_mat,para_val] = joint_to_mn_para(oc,p,ug);
-        
-#     end
-#     '''
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# # def bn_sample_joint_from_prior():
-#     '''
-#     function [oc,pmat] = bn_sample_joint_from_prior(dag,node_ordering,n,ess)
-#     %-------------------------------------------------------------------------
-#     % Sample joint distributions from a BDeu prior for a given DAG. 
-#     % INPUT:    dag - adjacency matrix of directed acyclic graph.
-#     %           node_ordering - node ordering in which the nodes are sampled.
-#     %           n - number of samples.
-#     %           ess - effective sample size in BDeu prior.
-#     % OUTPUT:   oc - joint outcomes
-#     %           pmat - matrix of sampled joint distributions.
-#     %-------------------------------------------------------------------------
-#         d = size(dag,2);
-#         tmp = repmat({[false true]},1,d);
-#         oc = allcomb(tmp{:});
-#         pmat = ones(size(oc,1),n);   
-#         for i = 1:d
-#             node = node_ordering(i);
-#             par = find(dag(:,node) == 1);
-#             if ~isempty(par)
-#                 par_oc = allcomb(tmp{par});
-#                 alpha = ess/(size(oc,1)*2);
-#                 for l = 1:size(par_oc,1)
-#                     p0 = betarnd(alpha,alpha,1,n);              
-#                     ind = ismember(oc(:,par),par_oc(l,:),'rows');
-#                     ind0 = (ind & (oc(:,node) == 0));
-#                     pmat(ind0,:) = pmat(ind0,:).*repmat(p0,sum(ind0),1);
-#                     ind1 = (ind & (oc(:,node) == 1));
-#                     pmat(ind1,:) = pmat(ind1,:).*repmat(1-p0,sum(ind1),1);
-#                 end     
-#             else
-#                 alpha = ess/2;            
-#                 p0 = betarnd(alpha,alpha,1,n);
-                
-#                 ind0 = (oc(:,node) == 0);
-#                 pmat(ind0,:) = pmat(ind0,:).*repmat(p0,sum(ind0),1);
-#                 ind1 = ((oc(:,node) == 1));
-#                 pmat(ind1,:) = pmat(ind1,:).*repmat(1-p0,sum(ind1),1);            
-#             end      
-#         end
-#     end
-#     '''             
-
-
-
-
-
-
-# # def bn_sample_joint_from_post():
-#     '''
-#     function [oc,pmat] = bn_sample_joint_from_post(dag,node_ordering,data,n,ess)
-#     %-------------------------------------------------------------------------
-#     % Sample joint distributions from a BDeu posterior for a given DAG. 
-#     % INPUT:    dag - adjacency matrix of directed acyclic graph.
-#     %           node_ordering - node ordering in which the nodes are sampled.'
-#     %           data - data matrix.
-#     %           n - number of samples.
-#     %           ess - effective sample size in BDeu prior.
-#     % OUTPUT:   oc - joint outcomes
-#     %           pmat - matrix of sampled joint distributions.
-#     %-------------------------------------------------------------------------
-#         d = size(dag,2);
-#         m = size(data,1);
-#         tmp = repmat({[false true]},1,d);
-#         oc = allcomb(tmp{:});
-#         pmat = ones(size(oc,1),n);
-        
-#         for i = 1:d
-#             node = node_ordering(i);
-#             par = find(dag(:,node) == 1);
-            
-#             if ~isempty(par)
-#                 par_oc = allcomb(tmp{par});
-#                 alpha = ess/(size(oc,1)*2);
-#                 for l = 1:size(par_oc,1)
-
-#                     ind = ismember(data(:,par),par_oc(l,:),'rows');
-                    
-#                     m1 = sum(data(ind,node));
-#                     m0 = sum(ind)-m1;
-                    
-#                     p0 = betarnd(m0+alpha,m1+alpha,1,n);              
-#                     ind = ismember(oc(:,par),par_oc(l,:),'rows');
-#                     ind0 = (ind & (oc(:,node) == 0));
-#                     pmat(ind0,:) = pmat(ind0,:).*repmat(p0,sum(ind0),1);
-#                     ind1 = (ind & (oc(:,node) == 1));
-#                     pmat(ind1,:) = pmat(ind1,:).*repmat(1-p0,sum(ind1),1);
-#                 end     
-#             else
-#                 alpha = ess/2;            
-#                 m1 = sum(data(:,node));
-#                 m0 = m-m1;
-#                 p0 = betarnd(m0+alpha,m1+alpha,1,n);
-                
-#                 ind0 = (oc(:,node) == 0);
-#                 pmat(ind0,:) = pmat(ind0,:).*repmat(p0,sum(ind0),1);
-#                 ind1 = ((oc(:,node) == 1));
-#                 pmat(ind1,:) = pmat(ind1,:).*repmat(1-p0,sum(ind1),1);            
-#             end
-                
-#         end
-#     end
-#     '''
-                
-                
-
-
-
-#         '''
-#         function [para_mat,para_sample,oc,pmat] = mn_sample_para(ug, data, n, ess)
-#         %-------------------------------------------------------------------------
-#         % Sample model parameters of a chordal MN from a prior/posterior specified 
-#         % indirectly through an equivalent Bayesian network with BDeu prior. 
-#         % INPUT:    ug - adjacency matrix of the undirected graph (must be chordal).
-#         %           data - available training data, leave empty if you want to draw 
-#         %                  samples from the prior.
-#         %           n - number of samples.
-#         %           ess - effective sample size in the BDeu prior.
-#         % OUTPUT:   para_mat - MN parameters.
-#         %           para_sample - matrix containing the n samples
-#         %           oc - joint outcome space.
-#         %           pmat - matrix of sampled joint distributions.
-#         %-------------------------------------------------------------------------
-#             % Turn DAG into an equivalent UG
-#             [dag, node_ordering] = ug_to_dag(ug);
-#             % IF no data, sample joint distributions from the prior, ELSE
-#             % sample joint distributions from posterior.
-#             if isempty(data)       
-#                 [oc,pmat] = bn_sample_joint_from_prior(dag, node_ordering, n, ess);
-#             else
-#                 [oc,pmat] = bn_sample_joint_from_post(dag, node_ordering, data, n, ess);  
-#             end    
-#             % Convert the joint distributions into MN parameters.
-#             [para_mat,para_sample] = joint_to_mn_para(oc,pmat,ug); 
-#         end
-#         '''  
-
-
-
-# # def bn_est_joint():
-#     '''
-#     function [oc,pval] = bn_est_joint(dag,node_ordering,data,ess)
-#     %-------------------------------------------------------------------------
-#     % Estimate joint distribution for a given DAG. 
-#     % INPUT:    dag - adjacency matrix of directed acyclic graph.
-#     %           node_ordering - node ordering in which the nodes are estimated.
-#     %           data - data matrix.
-#     %           ess - effective sample size in BDeu prior (0 for MLE).
-#     % OUTPUT:   oc - joint outcomes matrix.
-#     %           pval - joint distribution vector.
-#     %-------------------------------------------------------------------------
-#         d = size(dag,2);
-#         m = size(data,1);
-#         tmp = repmat({[false true]},1,d);
-#         oc = allcomb(tmp{:});
-#         pval = ones(size(oc,1),1);
-#         for i = 1:d
-#             node = node_ordering(i);
-#             par = find(dag(:,node) == 1);
-#             if ~isempty(par)
-#                 par_oc = allcomb(tmp{par});
-#                 alpha = ess/(size(oc,1)*2);
-#                 for l = 1:size(par_oc,1)
-#                     ind = ismember(data(:,par),par_oc(l,:),'rows');                
-#                     m1 = sum(data(ind,node));
-#                     m0 = sum(ind)-m1;                
-#                     p0 = (m0+alpha)/(m0+m1+2*alpha);              
-#                     ind = ismember(oc(:,par),par_oc(l,:),'rows');
-#                     ind0 = (ind & (oc(:,node) == 0));
-#                     pval(ind0) = pval(ind0)*p0;
-#                     ind1 = (ind & (oc(:,node) == 1));
-#                     pval(ind1) = pval(ind1)*(1-p0);
-#                 end     
-#             else
-#                 alpha = ess/2;            
-#                 m1 = sum(data(:,node));
-#                 m0 = m-m1;
-#                 p0 = (m0+alpha)/(m+2*alpha);           
-#                 ind0 = (oc(:,node) == 0);
-#                 pval(ind0) = pval(ind0)*p0;
-#                 ind1 = (oc(:,node) == 1);
-#                 pval(ind1) = pval(ind1)*(1-p0);            
-#             end           
-#         end
-#     end
-#     '''
