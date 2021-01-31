@@ -478,8 +478,8 @@ def get_model(n_obs=100, ess=50, ug=None, seed_obs=None):
     """
     if ug is None:
         ug = np.zeros((4, 4))
-        ug[0, 1:4] = 1
-        ug[1:4, 0] = 1
+        ug[0, 1:3] = 1
+        ug[1:3, 0] = 1
 
     m = elfi.new_model()
     priors = []
@@ -528,7 +528,7 @@ def sumstats(x, n, n_obs):
     else:    
         tmp, counts = np.unique(np.column_stack((x, e[np.zeros(m).astype(int), :])), axis=1, return_counts=True)
 
-    return counts - 1
+    return np.asanyarray(counts).reshape(-1, n) - 1
 
 
 def mn_calculate_jsd(*sim_data, observed, para_mat):
